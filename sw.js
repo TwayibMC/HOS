@@ -10,7 +10,7 @@
 //   Bump this string EVERY TIME you deploy. This invalidates the old cache atomically.
 //   Suggested format: 'hos-YYYY-MM-DD' or 'hos-v<N>'.
 
-const CACHE_VERSION = 'hos-v4';
+const CACHE_VERSION = 'hos-v5';
 const APP_SHELL = [
   './',
   './index.html',
