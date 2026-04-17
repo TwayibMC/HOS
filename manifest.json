@@ -1,0 +1,20 @@
+{
+  "name": "HOS — Human Optimization System",
+  "short_name": "HOS",
+  "description": "Productivité perso avec tracking, agenda et todo. Tout en local, zéro serveur.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
