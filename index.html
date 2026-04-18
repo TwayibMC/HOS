@@ -6,8 +6,8 @@
 <meta name="theme-color" content="#000000">
 <title>HOS</title>
 <link rel="manifest" href="manifest.json">
-<link rel="icon" href="icon.png" type="image/png">
-<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
   :root {
     --bg-0: #000000; --bg-1: #0d0b08; --bg-2: #161210; --bg-3: #1f1a15;
@@ -673,6 +673,10 @@
   </section>
 
   <section class="view" id="view-tracking">
+    <div id="tracking-edit-banner" style="display:none; background: linear-gradient(135deg, rgba(251,191,36,0.15) 0%, rgba(234,88,12,0.1) 100%); border: 1px solid rgba(251,191,36,0.4); color: var(--gold-soft); padding: 11px 15px; border-radius: var(--radius-md); margin-bottom: 14px; font-size: 0.88rem; display: flex; align-items: center; gap: 10px;">
+      <span style="flex:1;">Édition du <strong id="tracking-edit-date">—</strong></span>
+      <button id="tracking-edit-cancel" style="background: transparent; border: 1px solid var(--silver-2); color: var(--fg-0); padding: 6px 10px; border-radius: var(--radius-sm); font-family: inherit; font-size: 0.78rem; cursor: pointer;">Annuler</button>
+    </div>
     <details class="track-section" open>
       <summary>Sommeil &amp; énergie<span class="count">3 champs</span></summary>
       <div class="track-body">
@@ -832,6 +836,7 @@
     <div class="track-section" style="padding: 14px 16px;">
       <div id="day-tracking"></div>
     </div>
+    <button class="secondary" id="btn-edit-day-tracking" style="margin-top:8px;">Éditer le tracking de ce jour</button>
   </section>
 
   <section class="view" id="view-event-new">
@@ -1426,6 +1431,7 @@ const ui = {
   prayerState: {},
   evType: 'rdv',
   selectedDate: null,
+  editingDate: null, // null = edit today; otherwise ISO date string for retroactive edit
   newTaskOpts: { mit: false, urgent: false },
   accompPeriod: 7,
   agendaMode: 'month',
@@ -1474,6 +1480,9 @@ const ui = {
     document.querySelectorAll('nav.tabs button').forEach(btn => {
       btn.addEventListener('click', () => {
         if (!this.bootOk) return;
+        // When clicking the Tracking tab from the bottom nav, the user's
+        // intent is to log TODAY. Reset any retroactive edit state.
+        if (btn.dataset.tab === 'tracking') this.editingDate = null;
         this.goTo(btn.dataset.tab);
       });
     });
@@ -1554,6 +1563,25 @@ const ui = {
       this.goTo('event-new', { keepStack: true });
     });
 
+    // Retroactive tracking edit: from day-detail view, go to Tracking page
+    // pre-loaded with that day's data.
+    document.getElementById('btn-edit-day-tracking').addEventListener('click', () => {
+      if (!this.selectedDate) return;
+      if (this.selectedDate > this.todayStr()) {
+        return this.toast('Impossible d\'éditer un jour futur');
+      }
+      this.goTo('tracking', { keepStack: true, editDate: this.selectedDate });
+    });
+
+    // Cancel button on the edit banner: return to day detail view
+    document.getElementById('tracking-edit-cancel').addEventListener('click', () => {
+      if (this.editingDate) {
+        this.selectedDate = this.editingDate;
+        this.editingDate = null;
+        this.goTo('day', { keepStack: true });
+      }
+    });
+
     document.getElementById('btn-export').addEventListener('click', () => this.exportData());
     document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file').click());
     document.getElementById('import-file').addEventListener('change', (e) => this.importData(e));
@@ -1597,6 +1625,11 @@ const ui = {
     };
     document.getElementById('header-title').textContent = titles[view] || 'HOS';
     if (view === 'home') this.renderHome();
+    if (view === 'tracking') {
+      // opts.editDate (ISO string) → retroactive edit mode
+      // opts.editDate not set → normal mode (today)
+      this.loadTrackingFor(opts.editDate || null);
+    }
     if (view === 'board') this.renderBoard();
     if (view === 'agenda') { this._calCursorInit(); this.renderAgenda(); }
     if (view === 'todo') this.renderTodo();
@@ -1653,30 +1686,26 @@ const ui = {
       const urgentTodos = openTodos.filter(t => t.urgent);
       const importantCount = mitTodos.length + urgentTodos.filter(t => !t.mit).length;
 
-      let untracked = 0;
-      if (!dayRow) {
-        untracked = 10;
-      } else {
-        if (dayRow.sleep_minutes == null) untracked++;
-        if (dayRow.fatigue == null) untracked++;
-        if (PRAYERS.some(p => !dayRow[p])) untracked++;
-        for (const b of DAILY_BOOLS) if (!dayRow[b]) untracked++;
-        if ((dayRow.quran_pages || 0) === 0) untracked++;
-      }
+      // Tracking state: presence of an entry = day tracked.
+      // We don't count individual unticked booleans as "to track" — they may
+      // simply be "not done" (deliberate negative response).
+      const isTrackedToday = !!dayRow;
 
       const dateStr = new Date().toLocaleDateString('fr-FR', { weekday: 'long' });
       const isoShort = this.fmtFr(today);
       let msg = `Nous sommes ${dateStr} ${isoShort}. `;
       const bits = [];
-      if (untracked > 0) bits.push(`<span class="highlight">${untracked} chose${untracked > 1 ? 's' : ''} à tracker</span>`);
+      if (!isTrackedToday) bits.push(`<span class="highlight">tracking de la journée à faire</span>`);
       if (todayEvents.length > 0) bits.push(`<span class="highlight">${todayEvents.length} événement${todayEvents.length > 1 ? 's' : ''}</span> aujourd'hui`);
       if (importantCount > 0) bits.push(`<span class="highlight">${importantCount} tâche${importantCount > 1 ? 's' : ''} importante${importantCount > 1 ? 's' : ''}</span>`);
-      if (bits.length === 0) msg += 'Rien d\'urgent en vue.';
+      if (bits.length === 0) msg += 'Tout est à jour.';
       else msg += 'Il te reste ' + bits.slice(0, -1).join(', ') + (bits.length > 1 ? ' et ' : '') + bits[bits.length - 1] + '.';
       document.getElementById('context-line').innerHTML = msg;
 
-      const doneToday = dayRow ? this._countTrackedFields(dayRow) : 0;
-      document.getElementById('hint-tracking').textContent = `Fait aujourd'hui : ${doneToday}/13`;
+      // Hint on Tracking card: simple state (tracked yes/no)
+      document.getElementById('hint-tracking').textContent = isTrackedToday
+        ? 'Aujourd\'hui : tracké'
+        : 'Aujourd\'hui : pas encore tracké';
 
       const actions = recommend.generate(dailyRows);
       const drifts = actions.filter(a => a.metric === 'fatigue');
@@ -1709,10 +1738,30 @@ const ui = {
     return c;
   },
 
-  async loadTodayIfPresent() {
+  /**
+   * Charge les données de tracking pour une date donnée dans l'UI.
+   * Si date = null, charge aujourd'hui (mode normal).
+   * Si date = ISO string, charge ce jour (mode édition rétroactive).
+   */
+  async loadTrackingFor(date) {
     if (!this.bootOk) return;
+    const targetDate = date || this.todayStr();
+    this.editingDate = date; // null si aujourd'hui, sinon la date éditée
+
+    // Reset complet de l'UI du formulaire avant de charger
+    this._resetTrackingForm();
+
+    // Afficher/masquer le bandeau d'édition
+    const banner = document.getElementById('tracking-edit-banner');
+    if (date) {
+      banner.style.display = 'flex';
+      document.getElementById('tracking-edit-date').textContent = this.fmtFr(date);
+    } else {
+      banner.style.display = 'none';
+    }
+
     try {
-      const r = await storage.get('daily_log', this.todayStr());
+      const r = await storage.get('daily_log', targetDate);
       if (!r) return;
       if (r.sleep_minutes != null) {
         document.getElementById('sleep_h').value = Math.floor(r.sleep_minutes / 60);
@@ -1738,18 +1787,43 @@ const ui = {
         }
       }
       this._updateDinCount();
-    } catch (err) { console.error('loadTodayIfPresent:', err); }
+    } catch (err) { console.error('loadTrackingFor:', err); }
   },
+
+  /** Reset visuel de tous les champs du formulaire Tracking */
+  _resetTrackingForm() {
+    document.getElementById('sleep_h').value = '';
+    document.getElementById('sleep_m').value = '';
+    document.getElementById('sleep_time').value = '23:00';
+    document.getElementById('quran_pages').value = 0;
+    this.fatigueValue = null;
+    this.boolState = {};
+    this.prayerState = {};
+    document.querySelectorAll('#fatigue-slider button').forEach(x => x.classList.remove('selected'));
+    document.querySelectorAll('.toggle[data-bool]').forEach(x => x.classList.remove('on'));
+    document.querySelectorAll('.prayer-btn[data-prayer]').forEach(x => x.classList.remove('done'));
+    this._updateDinCount();
+  },
+
+  // Legacy alias for backward-compat with existing init() call
+  async loadTodayIfPresent() { return this.loadTrackingFor(null); },
 
   async saveDaily() {
     try {
+      const targetDate = this.editingDate || this.todayStr();
+
+      // Safety: never allow writing a future date
+      if (targetDate > this.todayStr()) {
+        return this.toast('Impossible de logger un jour futur');
+      }
+
       const h = parseInt(document.getElementById('sleep_h').value, 10);
       const m = parseInt(document.getElementById('sleep_m').value, 10);
       const sleepMinutes = (!isNaN(h) || !isNaN(m)) ? ((h || 0) * 60 + (m || 0)) : null;
       if (sleepMinutes != null && (sleepMinutes < 0 || sleepMinutes > 16 * 60))
         return this.toast('Durée de sommeil invalide');
       const row = {
-        log_date: this.todayStr(),
+        log_date: targetDate,
         sleep_minutes: sleepMinutes,
         sleep_time: document.getElementById('sleep_time').value || null,
         fatigue: this.fatigueValue,
@@ -1758,8 +1832,18 @@ const ui = {
       for (const p of PRAYERS) row[p] = this.prayerState[p] ? 1 : 0;
       for (const b of DAILY_BOOLS) row[b] = this.boolState[b] ? 1 : 0;
       await storage.put('daily_log', row);
-      this.toast('Enregistré');
-      this.renderHome();
+
+      // If we were editing a past day, return to the day detail view
+      if (this.editingDate) {
+        const editedDate = this.editingDate;
+        this.editingDate = null;
+        this.selectedDate = editedDate;
+        this.toast('Enregistré pour le ' + this.fmtFr(editedDate));
+        this.goTo('day', { keepStack: true });
+      } else {
+        this.toast('Enregistré');
+        this.renderHome();
+      }
     } catch (e) { this.toast('Erreur: ' + e.message); }
   },
 

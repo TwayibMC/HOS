@@ -10,12 +10,13 @@
 //   Bump this string EVERY TIME you deploy. This invalidates the old cache atomically.
 //   Suggested format: 'hos-YYYY-MM-DD' or 'hos-v<N>'.
 
-const CACHE_VERSION = 'hos-v5';
+const CACHE_VERSION = 'hos-v6';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.json',
-  './icon.png',
+  './icon-192.png',
+  './icon-512.png',
 ];
 
 self.addEventListener('install', (event) => {
