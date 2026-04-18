@@ -886,45 +886,45 @@
   </section>
 
   <section class="view" id="view-todo">
-    <div class="todo-section grocery" id="sec-grocery" style="display:none;">
-      <div class="sec-title">
-        🛒 Courses <span class="sec-count" id="count-grocery">0</span>
-        <button class="btn-clean-grocery" id="btn-clean-grocery" style="margin-left:auto;">Vider terminés</button>
-      </div>
-      <div id="todo-grocery"></div>
+  <div class="todo-section grocery" id="sec-grocery" style="display:none;">
+    <div class="sec-title" style="display:flex; align-items:center;">
+      🛒 Courses <span class="sec-count" id="count-grocery" style="margin-left:8px;">0</span>
+      <button class="btn-clean-grocery" id="btn-clean-grocery" style="margin-left:auto;">Vider terminés</button>
     </div>
+    <div id="todo-grocery"></div>
+  </div>
 
-    <div class="todo-section overdue" id="sec-overdue" style="display:none;">
-      <div class="sec-title">⚠ En retard <span class="sec-count" id="count-overdue">0</span></div>
-      <div id="todo-overdue"></div>
-    </div>
+  <div class="todo-section overdue" id="sec-overdue" style="display:none;">
+    <div class="sec-title">⚠ En retard <span class="sec-count" id="count-overdue">0</span></div>
+    <div id="todo-overdue"></div>
+  </div>
 
-    <div class="todo-section today">
-      <div class="sec-title">📅 Aujourd'hui <span class="sec-count" id="count-today">0</span></div>
-      <div id="todo-today"></div>
-    </div>
+  <div class="todo-section today">
+    <div class="sec-title">📅 Aujourd'hui <span class="sec-count" id="count-today">0</span></div>
+    <div id="todo-today"></div>
+  </div>
 
-    <div class="todo-section upcoming">
-      <div class="sec-title">❯ À venir <span class="sec-count" id="count-upcoming">0</span></div>
-      <div id="todo-upcoming"></div>
-    </div>
+  <div class="todo-section upcoming">
+    <div class="sec-title">❯ À venir <span class="sec-count" id="count-upcoming">0</span></div>
+    <div id="todo-upcoming"></div>
+  </div>
 
-    <div class="todo-section backlog">
-      <div class="sec-title">Sans date <span class="sec-count" id="count-backlog">0</span></div>
-      <div id="todo-backlog"></div>
-    </div>
+  <div class="todo-section backlog">
+    <div class="sec-title">Sans date <span class="sec-count" id="count-backlog">0</span></div>
+    <div id="todo-backlog"></div>
+  </div>
 
-    <div class="add-task-form">
-      <input type="text" id="task-text" placeholder="Nouvelle tâche ou article...">
-      <input type="date" id="task-due" placeholder="Échéance (optionnel)">
-      <div class="opts">
-        <div class="opt-toggle" id="opt-mit">★ MIT</div>
-        <div class="opt-toggle" id="opt-urgent">⚠ Urgent</div>
-        <div class="opt-toggle" id="opt-grocery">🛒 Course</div>
-      </div>
-      <button class="primary" id="btn-add-task" style="margin-top:0;">Ajouter</button>
+  <div class="add-task-form">
+    <input type="text" id="task-text" placeholder="Nouvelle tâche ou article...">
+    <input type="date" id="task-due" placeholder="Échéance (optionnel)">
+    <div class="opts">
+      <div class="opt-toggle" id="opt-mit">★ MIT</div>
+      <div class="opt-toggle" id="opt-urgent">⚠ Urgent</div>
+      <div class="opt-toggle" id="opt-grocery">🛒 Course</div>
     </div>
-  </section>
+    <button class="primary" id="btn-add-task" style="margin-top:0;">Ajouter</button>
+  </div>
+</section>
 
   <section class="view" id="view-settings">
     <h2>Données</h2>
@@ -1607,12 +1607,16 @@ const ui = {
     });
 
     document.getElementById('btn-clean-grocery').addEventListener('click', async () => {
-      if(confirm("Supprimer définitivement les articles de courses terminés ?")) {
-        const todos = await storage.fetchTodos();
-        const toDelete = todos.filter(t => t.is_grocery && t.done);
-        for(const t of toDelete) await storage.del('todos', t.id);
-        this.renderTodo();
+      const todos = await storage.fetchTodos();
+      const toDelete = todos.filter(t => t.is_grocery && t.done);
+      
+      if (toDelete.length === 0) {
+        return this.toast('Aucun article terminé à vider');
       }
+      
+      for(const t of toDelete) await storage.del('todos', t.id);
+      this.renderTodo();
+      this.toast('Liste nettoyée'); // Notification dans le thème de l'app
     });
     document.getElementById('btn-add-task').addEventListener('click', () => this.addTask());
 
@@ -2236,31 +2240,72 @@ const ui = {
     } catch (e) { this.toast('Erreur: ' + e.message); }
   },
 
+  _renderTask(t) {
+    let badges = '';
+    // Pas de badge MIT/Urgent pour les courses
+    if (!t.is_grocery) {
+      if (t.mit) badges += '<span class="badge" style="background:rgba(234,88,12,0.15); color:var(--amber-light); border:1px solid rgba(234,88,12,0.3); font-size:0.6rem; padding:2px 6px; border-radius:4px; font-weight:700; text-transform:uppercase;">MIT</span>';
+      if (t.urgent) badges += '<span class="badge urgent">Urgent</span>';
+    }
+    if (t.due_date) badges += `<span class="badge due">${this.fmtFr(t.due_date)}</span>`;
+
+    return `<div class="task ${t.done ? 'done' : ''}">
+      <div class="check" data-id="${t.id}"></div>
+      <div class="text">${this._escape(t.text)}</div>
+      <div class="badges">${badges}</div>
+      <button class="task-delete" data-id="${t.id}">✕</button>
+    </div>`;
+  },
+
+  _attachTodoEvents() {
+    document.querySelectorAll('.task .check').forEach(el => {
+      el.onclick = async () => {
+        const id = parseInt(el.dataset.id, 10);
+        const t = await storage.get('todos', id);
+        if (t) { t.done = !t.done; await storage.put('todos', t); this.renderTodo(); }
+      };
+    });
+    
+    document.querySelectorAll('.task .task-delete').forEach(el => {
+      el.onclick = async () => {
+        // Suppression directe, sans la boîte internet
+        await storage.del('todos', parseInt(el.dataset.id, 10));
+        this.renderTodo();
+        this.toast('Supprimé');
+      };
+    });
+  },
+
   async renderTodo() {
     if (!this.bootOk) return;
     try {
       const todos = await storage.fetchTodos();
       const today = this.todayStr();
       
-      const groceries = todos.filter(t => t.is_grocery && !t.done);
+      // 1. Les courses (On garde les cochées pour les voir barrées)
+      const groceries = todos.filter(t => t.is_grocery);
+      
+      // 2. Les tâches classiques
       const tasks = todos.filter(t => !t.is_grocery && !t.done);
-      const doneItems = todos.filter(t => t.done && !t.is_grocery); // On garde les tâches terminées en backlog
+      const doneTasks = todos.filter(t => !t.is_grocery && t.done);
 
       const overdue = tasks.filter(t => t.due_date && t.due_date < today);
       const forToday = tasks.filter(t => t.due_date === today);
       const upcoming = tasks.filter(t => t.due_date && t.due_date > today);
-      const noDate = tasks.filter(t => !t.due_date).concat(doneItems);
+      const noDate = tasks.filter(t => !t.due_date).concat(doneTasks);
 
       const renderSection = (id, list, countId, containerId) => {
         const el = document.getElementById(id);
         const countEl = document.getElementById(countId);
         const container = document.getElementById(containerId);
-        countEl.textContent = list.length;
+        
+        if (countEl) countEl.textContent = list.length;
+        
         if (list.length > 0) {
-          if(container) container.style.display = 'block';
+          if (container) container.style.display = 'block';
           el.innerHTML = list.map(t => this._renderTask(t)).join('');
         } else {
-          if(container) container.style.display = (id === 'todo-today' ? 'block' : 'none');
+          if (container && id !== 'todo-today') container.style.display = 'none';
           el.innerHTML = id === 'todo-today' ? '<div class="info-text">Rien pour aujourd\'hui.</div>' : '';
         }
       };
@@ -2271,22 +2316,8 @@ const ui = {
       renderSection('todo-upcoming', upcoming, 'count-upcoming', null);
       renderSection('todo-backlog', noDate, 'count-backlog', null);
 
-      document.querySelectorAll('.task .check').forEach(el => {
-        el.addEventListener('click', async () => {
-          const id = parseInt(el.dataset.id, 10);
-          const t = await storage.get('todos', id);
-          if (t) { t.done = !t.done; await storage.put('todos', t); this.renderTodo(); }
-        });
-      });
-      document.querySelectorAll('.task .task-delete').forEach(el => {
-        el.addEventListener('click', async () => {
-          if (confirm('Supprimer cette tâche ?')) {
-            await storage.del('todos', parseInt(el.dataset.id, 10));
-            this.renderTodo();
-          }
-        });
-      });
-    } catch (err) { console.error('renderTodo:', err); }
+      this._attachTodoEvents();
+    } catch (err) { console.error('Erreur renderTodo:', err); }
   },
 
   async addTask() {
