@@ -10,7 +10,7 @@
 //   Bump this string EVERY TIME you deploy. This invalidates the old cache atomically.
 //   Suggested format: 'hos-YYYY-MM-DD' or 'hos-v<N>'.
 
-const CACHE_VERSION = 'hos-v0.1.8';
+const CACHE_VERSION = 'hos-v0.2.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -51,7 +51,11 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone));
         }
         return response;
-      }).catch(() => cached);
+      }).catch(() => cached || new Response('Offline – ressource non disponible', {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      }));
     })
   );
 });

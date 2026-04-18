@@ -770,9 +770,15 @@
         <div class="field">
           <div class="label-col">
             <div class="name">Coran lu aujourd'hui</div>
-            <div class="unit">pages (mushaf)</div>
           </div>
-          <input type="number" id="quran_pages" min="0" step="1" inputmode="numeric" value="0">
+          <div class="toggle" id="quran-toggle"></div>
+        </div>
+        <div class="field" id="quran-pages-field" style="display:none;">
+          <div class="label-col">
+            <div class="name">Pages lues</div>
+            <div class="unit">mushaf</div>
+          </div>
+          <input type="number" id="quran_pages" min="0" step="1" inputmode="numeric" placeholder="0" style="width:100px;padding:8px 10px;text-align:center;">
         </div>
         <div class="field">
           <div class="label-col">
@@ -825,6 +831,7 @@
     <div class="cal-nav">
       <button id="cal-prev">‹</button>
       <div class="month" id="cal-month">—</div>
+      <button id="cal-today" style="font-size:0.72rem;width:auto;padding:0 10px;color:var(--amber-light);letter-spacing:0.04em;">Auj.</button>
       <button id="cal-next">›</button>
     </div>
     <div id="cal-body"></div>
@@ -856,7 +863,7 @@
   </section>
 
   <section class="view" id="view-event-new">
-    <h2>Nouvel événement</h2>
+    <h2 id="ev-form-title">Nouvel événement</h2>
     <div class="form-label">Type</div>
     <div class="type-grid" id="event-type-grid" style="margin-bottom: 14px;">
       <div class="type-btn selected" data-type="rdv"><span class="ti">📅</span>RDV</div>
@@ -880,7 +887,14 @@
     <div class="form-label">Lieu (optionnel)</div>
     <input type="text" id="ev-location" style="width:100%; margin-bottom: 14px;" placeholder="Ex: Cabinet Dr. Martin, Nice">
     <div class="form-label">Notes</div>
-    <textarea id="ev-notes" placeholder="Détails, rappels..." style="width:100%;"></textarea>
+    <textarea id="ev-notes" placeholder="Détails, rappels..." style="width:100%; margin-bottom:14px;"></textarea>
+    <div class="form-label">Récurrence</div>
+    <div class="period-toggle" id="ev-recurrence-toggle" style="margin-bottom:16px;">
+      <button class="active" data-recur="none">Aucune</button>
+      <button data-recur="weekly">Hebdo</button>
+      <button data-recur="yearly">Annuel</button>
+    </div>
+    <input type="hidden" id="ev-edit-id" value="">
     <button class="primary" id="btn-save-event">Créer l'événement</button>
     <button class="secondary" id="btn-cancel-event">Annuler</button>
   </section>
@@ -913,6 +927,14 @@
     <div class="sec-title">Sans date <span class="sec-count" id="count-backlog">0</span></div>
     <div id="todo-backlog"></div>
   </div>
+
+  <details class="todo-section" id="sec-done" style="display:none; margin-top:4px;">
+    <summary style="list-style:none;display:flex;align-items:center;gap:8px;cursor:pointer;padding:2px 0;">
+      <span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--fg-3);">✓ Terminées</span>
+      <span id="count-done" style="margin-left:auto;color:var(--fg-3);font-size:0.75rem;font-weight:400;">0</span>
+    </summary>
+    <div id="todo-done" style="margin-top:10px;"></div>
+  </details>
 
   <div class="add-task-form">
     <input type="text" id="task-text" placeholder="Nouvelle tâche ou article...">
@@ -1034,15 +1056,33 @@ const MIGRATIONS = [
     if (db.objectStoreNames.contains('hypothesis')) db.deleteObjectStore('hypothesis');
   },
   // v3 — Ajout du champ is_grocery pour les todos
-  function m_003_add_grocery_field(db, tx) {
+  // FIXED: la version originale utilisait un curseur asynchrone dans onupgradeneeded,
+  // ce qui provoque un TransactionInactiveError dès qu'il y a des todos existants.
+  // La transaction onupgradeneeded se ferme dès que le callstack synchrone est vide ;
+  // les callbacks de curseur arrivaient trop tard. Fix : getAll() synchrone + put() en boucle.
+  function m_003_add_grocery_field(_db, tx) {
     const store = tx.objectStore('todos');
-    store.openCursor().onsuccess = (e) => {
-      const cursor = e.target.result;
-      if (cursor) {
-        const data = cursor.value;
-        if (data.is_grocery === undefined) data.is_grocery = 0;
-        cursor.update(data);
-        cursor.continue();
+    const req = store.getAll();
+    req.onsuccess = () => {
+      for (const row of (req.result || [])) {
+        if (row.is_grocery === undefined) {
+          row.is_grocery = 0;
+          store.put(row);
+        }
+      }
+    };
+  },
+  // v4 — Repair run : re-applique is_grocery = 0 sur tout todo qui l'aurait manqué
+  // à cause du bug de la m_003 originale (curseur async). Idempotent.
+  function m_004_repair_grocery_field(_db, tx) {
+    const store = tx.objectStore('todos');
+    const req = store.getAll();
+    req.onsuccess = () => {
+      for (const row of (req.result || [])) {
+        if (row.is_grocery === undefined) {
+          row.is_grocery = 0;
+          store.put(row);
+        }
       }
     };
   }
@@ -1089,12 +1129,18 @@ const storage = {
         const r = indexedDB.open(DB_NAME, installedVersion);
         r.onerror = () => rej(r.error);
         r.onsuccess = () => res(r.result);
-        r.onblocked = () => rej(new Error('snapshot probe blocked'));
+        // onblocked means another tab has the DB open at the old version.
+        // We MUST NOT block the entire boot for this. Log and skip snapshot.
+        r.onblocked = () => {
+          console.warn('[storage] snapshot probe blocked (another tab open). Skipping snapshot.');
+          res(null); // resolve with null = signal to skip
+        };
       });
     } catch (err) {
       console.warn('[storage] could not open for snapshot:', err);
       return;
     }
+    if (!probe) return; // blocked — skip snapshot, proceed to real open
 
     try {
       const oldStores = Array.from(probe.objectStoreNames);
@@ -1247,18 +1293,14 @@ const storage = {
       if (!this.db.objectStoreNames.contains(name)) continue;
       await new Promise((res, rej) => {
         const tx = this.db.transaction(name, 'readwrite');
+        tx.oncomplete = () => res();
+        tx.onerror = () => rej(tx.error);
+        tx.onabort = () => rej(tx.error || new Error(`Transaction aborted on store "${name}"`));
         const store = tx.objectStore(name);
-        const c = store.clear();
-        c.onsuccess = () => {
-          let rem = rows.length;
-          if (!rem) return res();
-          for (const row of rows) {
-            const r = store.put(row);
-            r.onsuccess = () => { if (--rem === 0) res(); };
-            r.onerror = () => rej(r.error);
-          }
+        store.clear().onsuccess = () => {
+          for (const row of rows) store.put(row);
+          // tx.oncomplete fires once all puts are flushed — no manual counter needed.
         };
-        c.onerror = () => rej(c.error);
       });
     }
   },
@@ -1302,7 +1344,10 @@ const analytics = {
     const recent = values.slice(-shortWin);
     const mu = this.mean(baseline), sigma = this.std(baseline);
     if (sigma === 0) return false;
-    const z = (recent[recent.length - 1] - mu) / sigma;
+    // Utilise la moyenne de la fenêtre récente (5 j) plutôt que le dernier point seul.
+    // Un pic isolé ne déclenche plus de fausse alerte — la tendance doit être soutenue.
+    const recentMean = this.mean(recent);
+    const z = (recentMean - mu) / sigma;
     const slope = this.linearSlope(recent);
     if (metric === 'fatigue') return z >= 1.0 && slope > 0;
     return z <= -1.0 && slope < 0;
@@ -1323,18 +1368,27 @@ const recommend = {
     const actions = [];
 
     const fatigues = sortedRows.map(r => r.fatigue).filter(v => typeof v === 'number');
+    // Moyenne sommeil 7j pour contextualiser la recommandation
+    const sleep7 = last7.map(r => r.sleep_minutes).filter(v => v != null);
+    const sleepAvg7h = sleep7.length > 0
+      ? (analytics.mean(sleep7) / 60).toFixed(1)
+      : null;
+    const sleepTarget = sleepAvg7h != null
+      ? `Cible : ${(parseFloat(sleepAvg7h) + 1).toFixed(1)} h (moyenne 7j : ${sleepAvg7h} h).`
+      : 'Cible : +1 h vs ta moyenne habituelle.';
+
     if (fatigues.length >= 19 && analytics.detectDrift(fatigues, 'fatigue')) {
       const recent = fatigues.slice(-5);
       actions.push({
         priority: 1, metric: 'fatigue',
-        why: `Fatigue en hausse : ${recent.slice(-3).join(', ')} ces 3 derniers jours (moyenne 30j : ${analytics.mean(fatigues).toFixed(1)}).`,
-        what: 'Réduire la charge aujourd\'hui. Sommeil cible : +1 h vs moyenne 7j.',
+        why: `Fatigue en hausse soutenue : ${recent.slice(-3).join(', ')} ces 3 derniers jours (moyenne 30j : ${analytics.mean(fatigues).toFixed(1)}).`,
+        what: `Réduire la charge aujourd'hui. ${sleepTarget}`,
       });
     } else if (fatigues.length >= 2 && fatigues.slice(-2).every(f => f >= 4)) {
       actions.push({
         priority: 1, metric: 'fatigue',
         why: `Fatigue ≥ 4 sur les 2 derniers jours.`,
-        what: 'Réduire la charge. Sommeil cible : +1 h vs moyenne 7j.',
+        what: `Réduire la charge. ${sleepTarget}`,
       });
     }
 
@@ -1365,8 +1419,8 @@ const recommend = {
       });
     }
 
-    const quranRecent = last7.map(r => r.quran_pages || 0);
-    const quran30 = last30.map(r => r.quran_pages || 0);
+    const quranRecent = last7.map(r => r.quran_pages).filter(v => v != null);
+    const quran30 = last30.map(r => r.quran_pages).filter(v => v != null);
     if (quranRecent.length >= 5 && quran30.length >= 15) {
       const m7 = analytics.mean(quranRecent);
       const m30 = analytics.mean(quran30);
@@ -1475,8 +1529,10 @@ const ui = {
   boolState: {},
   prayerState: {},
   evType: 'rdv',
+  evRecurrence: 'none',   // P7
   selectedDate: null,
   editingDate: null, // null = edit today; otherwise ISO date string for retroactive edit
+  quranRead: false,  // P4 — toggle état
   newTaskOpts: { mit: false, urgent: false, grocery: false },
   accompPeriod: 7,
   agendaMode: 'month',
@@ -1582,6 +1638,12 @@ const ui = {
     });
     document.getElementById('cal-prev').addEventListener('click', () => this._calShift(-1));
     document.getElementById('cal-next').addEventListener('click', () => this._calShift(+1));
+    // P10 — retour à aujourd'hui
+    document.getElementById('cal-today').addEventListener('click', () => {
+      const d = new Date();
+      this.calCursor = { year: d.getFullYear(), month: d.getMonth(), day: d.getDate() };
+      this.renderAgenda();
+    });
 
     document.querySelectorAll('#event-type-grid .type-btn').forEach(b => {
       b.addEventListener('click', () => {
@@ -1590,8 +1652,26 @@ const ui = {
         this.evType = b.dataset.type;
       });
     });
+    // P7 — récurrence
+    document.querySelectorAll('#ev-recurrence-toggle button').forEach(b => {
+      b.addEventListener('click', () => {
+        document.querySelectorAll('#ev-recurrence-toggle button').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        this.evRecurrence = b.dataset.recur;
+      });
+    });
     document.getElementById('btn-save-event').addEventListener('click', () => this.saveEvent());
-    document.getElementById('btn-cancel-event').addEventListener('click', () => this.goBack());
+    document.getElementById('btn-cancel-event').addEventListener('click', () => { this._resetEventForm(); this.goBack(); });
+
+    // P4 — toggle Coran
+    document.getElementById('quran-toggle').addEventListener('click', () => {
+      const tog = document.getElementById('quran-toggle');
+      tog.classList.toggle('on');
+      this.quranRead = tog.classList.contains('on');
+      document.getElementById('quran-pages-field').style.display = this.quranRead ? 'flex' : 'none';
+      if (!this.quranRead) document.getElementById('quran_pages').value = '';
+      this._updateDinCount();
+    });
 
     document.getElementById('opt-mit').addEventListener('click', (e) => {
       e.currentTarget.classList.toggle('active-mit');
@@ -1621,6 +1701,7 @@ const ui = {
     document.getElementById('btn-add-task').addEventListener('click', () => this.addTask());
 
     document.getElementById('btn-add-event').addEventListener('click', () => {
+      this._resetEventForm();
       if (this.selectedDate) document.getElementById('ev-date').value = this.selectedDate;
       this.goTo('event-new', { keepStack: true });
     });
@@ -1660,9 +1741,11 @@ const ui = {
 
   _updateDinCount() {
     const count = PRAYERS.reduce((s, p) => s + (this.prayerState[p] ? 1 : 0), 0);
-    const quran = parseInt(document.getElementById('quran_pages').value, 10) || 0;
     const dhikrOn = this.boolState.dhikr_done === 1 ? ' · dhikr' : '';
-    document.getElementById('din-count').textContent = `${count}/5 prières · ${quran} p.${dhikrOn}`;
+    const quranLabel = this.quranRead
+      ? ` · ${parseInt(document.getElementById('quran_pages').value, 10) || 0} p.`
+      : '';
+    document.getElementById('din-count').textContent = `${count}/5 prières${quranLabel}${dhikrOn}`;
   },
 
   goTo(view, opts = {}) {
@@ -1835,7 +1918,13 @@ const ui = {
         const btn = document.querySelector(`#fatigue-slider button[data-val="${r.fatigue}"]`);
         if (btn) btn.classList.add('selected');
       }
-      document.getElementById('quran_pages').value = r.quran_pages || 0;
+      document.getElementById('quran_pages').value = r.quran_pages != null ? r.quran_pages : '';
+      // P4 — activer le toggle si quran_pages non-null
+      if (r.quran_pages != null) {
+        this.quranRead = true;
+        document.getElementById('quran-toggle').classList.add('on');
+        document.getElementById('quran-pages-field').style.display = 'flex';
+      }
       for (const p of PRAYERS) {
         if (r[p]) {
           this.prayerState[p] = 1;
@@ -1857,7 +1946,11 @@ const ui = {
     document.getElementById('sleep_h').value = '';
     document.getElementById('sleep_m').value = '';
     document.getElementById('sleep_time').value = '23:00';
-    document.getElementById('quran_pages').value = 0;
+    // P4 — quran toggle
+    this.quranRead = false;
+    document.getElementById('quran-toggle').classList.remove('on');
+    document.getElementById('quran-pages-field').style.display = 'none';
+    document.getElementById('quran_pages').value = '';
     this.fatigueValue = null;
     this.boolState = {};
     this.prayerState = {};
@@ -1889,7 +1982,10 @@ const ui = {
         sleep_minutes: sleepMinutes,
         sleep_time: document.getElementById('sleep_time').value || null,
         fatigue: this.fatigueValue,
-        quran_pages: parseInt(document.getElementById('quran_pages').value, 10) || 0,
+        // P4 — null = non rempli, 0 = délibérément 0 page
+        quran_pages: this.quranRead
+          ? (parseInt(document.getElementById('quran_pages').value, 10) || 0)
+          : null,
       };
       for (const p of PRAYERS) row[p] = this.prayerState[p] ? 1 : 0;
       for (const b of DAILY_BOOLS) row[b] = this.boolState[b] ? 1 : 0;
@@ -1940,10 +2036,14 @@ const ui = {
     const recent = rows.filter(r => recommend._daysAgo(r.log_date, today) < period);
     if (recent.length === 0) { c.innerHTML = '<div class="empty-state" style="padding:20px;">Pas encore de données.</div>'; return; }
     const prayersDone = recent.reduce((s, r) => s + PRAYERS.reduce((ss, p) => ss + (r[p] ? 1 : 0), 0), 0);
-    const quranTotal = recent.reduce((s, r) => s + (r.quran_pages || 0), 0);
+    const quranLogged = recent.filter(r => r.quran_pages != null);
+    const quranTotal  = quranLogged.reduce((s, r) => s + r.quran_pages, 0);
+    const quranLabel  = quranLogged.length > 0
+      ? `${quranTotal} p · moy. ${(quranTotal / quranLogged.length).toFixed(1)} p/j (${quranLogged.length} j renseignés)`
+      : '—';
     const items = [
       { name: 'Prières', val: `${prayersDone} / ${5 * recent.length}` },
-      { name: 'Coran', val: `${quranTotal} pages` },
+      { name: 'Coran', val: quranLabel },
       { name: '2 L d\'eau', val: this._freqLabel(recent, 'water_2l') },
       { name: 'Étirement matin', val: this._freqLabel(recent, 'stretching_morning') },
       { name: 'Étirement soir', val: this._freqLabel(recent, 'stretching_evening') },
@@ -1964,11 +2064,32 @@ const ui = {
     const c = document.getElementById('board-sleep-body');
     const withSleep = rows.filter(r => r.sleep_minutes != null && r.fatigue != null);
     if (withSleep.length < 14) { c.innerHTML = '<div class="empty-state">Besoin d\'au moins 14 jours de données sommeil + fatigue.</div>'; return; }
+
     const sleepSeries = rows.filter(r => r.sleep_minutes != null).map(r => r.sleep_minutes);
     const bedSeries = rows.filter(r => r.sleep_time).map(r => {
       const [hh, mm] = r.sleep_time.split(':').map(Number);
       return (hh < 12 ? hh + 24 : hh) - 20 + mm / 60;
     });
+
+    // Encart objectif vs réel — moyennes 7j et 30j, cible fixe 7h30
+    const SLEEP_TARGET_MIN = 7.5 * 60;
+    const today = this.todayStr();
+    const last7sleep  = rows.filter(r => r.sleep_minutes != null && recommend._daysAgo(r.log_date, today) < 7).map(r => r.sleep_minutes);
+    const last30sleep = rows.filter(r => r.sleep_minutes != null && recommend._daysAgo(r.log_date, today) < 30).map(r => r.sleep_minutes);
+    const avg7  = last7sleep.length  > 0 ? analytics.mean(last7sleep)  : null;
+    const avg30 = last30sleep.length > 0 ? analytics.mean(last30sleep) : null;
+    const fmt = (min) => { const h = Math.floor(min/60); const m = Math.round(min%60); return m > 0 ? `${h}h${String(m).padStart(2,'0')}` : `${h}h`; };
+    const delta7  = avg7  != null ? avg7  - SLEEP_TARGET_MIN : null;
+    const delta30 = avg30 != null ? avg30 - SLEEP_TARGET_MIN : null;
+    const deltaLabel = (d) => d == null ? '—' : (d >= 0 ? `<span style="color:#34d399;">+${fmt(d)}</span>` : `<span style="color:#fca5a5;">${fmt(d)}</span>`);
+    const objectifBox = `<div class="analysis-box" style="margin-bottom:10px;">
+      <strong>Objectif vs réel (cible : 7h30)</strong>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:0.82rem;">
+        <div>Moy. 7j<br><strong>${avg7 != null ? fmt(avg7) : '—'}</strong><br><span style="font-size:0.72rem;color:var(--fg-3);">vs cible : ${deltaLabel(delta7)}</span></div>
+        <div>Moy. 30j<br><strong>${avg30 != null ? fmt(avg30) : '—'}</strong><br><span style="font-size:0.72rem;color:var(--fg-3);">vs cible : ${deltaLabel(delta30)}</span></div>
+      </div>
+    </div>`;
+
     const before23 = withSleep.filter(r => {
       if (!r.sleep_time) return false;
       const [h] = r.sleep_time.split(':').map(Number);
@@ -1982,7 +2103,7 @@ const ui = {
       return false;
     });
     const shortSleep = withSleep.filter(r => r.sleep_minutes < 6.5 * 60);
-    const longSleep = withSleep.filter(r => r.sleep_minutes >= 7.5 * 60);
+    const longSleep  = withSleep.filter(r => r.sleep_minutes >= 7.5 * 60);
     const bedAnalysis = (before23.length >= 5 && after2330.length >= 5)
       ? `<div class="analysis-box"><strong>Heure de coucher × fatigue</strong>
            Avant 23:00 (n=${before23.length}) : fatigue moyenne <strong>${analytics.mean(before23.map(r=>r.fatigue)).toFixed(1)}</strong><br>
@@ -1992,6 +2113,7 @@ const ui = {
            &lt; 6h30 (n=${shortSleep.length}) : fatigue moyenne <strong>${analytics.mean(shortSleep.map(r=>r.fatigue)).toFixed(1)}</strong><br>
            ≥ 7h30 (n=${longSleep.length}) : fatigue moyenne <strong>${analytics.mean(longSleep.map(r=>r.fatigue)).toFixed(1)}</strong></div>` : '';
     c.innerHTML = `
+      ${objectifBox}
       <div style="font-size:0.78rem; color:var(--fg-3); margin-bottom:4px;">Durée de sommeil (${sleepSeries.length} j)</div>
       <svg class="sparkline" viewBox="0 0 300 48" preserveAspectRatio="none">${this._spark(sleepSeries)}</svg>
       <div style="font-size:0.78rem; color:var(--fg-3); margin:14px 0 4px;">Heure de coucher (${bedSeries.length} j)</div>
@@ -2166,12 +2288,43 @@ const ui = {
       } else {
         evC.innerHTML = events.map(e => {
           const t = EV_TYPES[e.type] || EV_TYPES.reminder;
-          return `<div class="event-item ${e.type}"><span class="ev-icon">${t.icon}</span>
-            <div class="ev-body"><div class="ev-title">${this._escape(e.title || '(sans titre)')}</div>
-            <div class="ev-meta">${e.time ? this._escape(e.time) : '—'}${e.location ? ' · ' + this._escape(e.location) : ''}</div>
-            ${e.notes ? `<div class="ev-notes">${this._escape(e.notes)}</div>` : ''}</div>
-            <button class="ev-delete" data-ev-id="${e.id}">✕</button></div>`;
+          const recurBadge = e.recurrence && e.recurrence !== 'none'
+            ? `<span style="font-size:0.6rem;color:var(--fg-3);margin-left:4px;">${e.recurrence === 'weekly' ? '↻ hebdo' : '↻ annuel'}</span>` : '';
+          return `<div class="event-item ${e.type}">
+            <span class="ev-icon">${t.icon}</span>
+            <div class="ev-body">
+              <div class="ev-title">${this._escape(e.title || '(sans titre)')}${recurBadge}</div>
+              <div class="ev-meta">${e.time ? this._escape(e.time) : '—'}${e.location ? ' · ' + this._escape(e.location) : ''}</div>
+              ${e.notes ? `<div class="ev-notes">${this._escape(e.notes)}</div>` : ''}
+            </div>
+            <button class="ev-edit" data-ev-id="${e.id}" style="background:none;border:none;color:var(--amber-light);cursor:pointer;padding:4px 6px;font-size:0.95rem;align-self:flex-start;" title="Modifier">✎</button>
+            <button class="ev-delete" data-ev-id="${e.id}">✕</button>
+          </div>`;
         }).join('');
+        evC.querySelectorAll('.ev-edit').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const ev = await storage.get('events', parseInt(btn.dataset.evId, 10));
+            if (!ev) return;
+            this._resetEventForm();
+            document.getElementById('ev-form-title').textContent = 'Modifier l\'événement';
+            document.getElementById('btn-save-event').textContent = 'Enregistrer';
+            document.getElementById('ev-edit-id').value = ev.id;
+            document.getElementById('ev-title').value = ev.title || '';
+            document.getElementById('ev-date').value = ev.date || '';
+            document.getElementById('ev-time').value = ev.time || '';
+            document.getElementById('ev-location').value = ev.location || '';
+            document.getElementById('ev-notes').value = ev.notes || '';
+            this.evType = ev.type || 'rdv';
+            this.evRecurrence = ev.recurrence || 'none';
+            document.querySelectorAll('#event-type-grid .type-btn').forEach(x => x.classList.remove('selected'));
+            const tb = document.querySelector(`#event-type-grid .type-btn[data-type="${ev.type}"]`);
+            if (tb) tb.classList.add('selected');
+            document.querySelectorAll('#ev-recurrence-toggle button').forEach(x => x.classList.remove('active'));
+            const rb = document.querySelector(`#ev-recurrence-toggle button[data-recur="${ev.recurrence || 'none'}"]`);
+            if (rb) rb.classList.add('active');
+            this.goTo('event-new', { keepStack: true });
+          });
+        });
         evC.querySelectorAll('.ev-delete').forEach(btn => {
           btn.addEventListener('click', async () => {
             if (confirm('Supprimer cet événement ?')) {
@@ -2228,16 +2381,64 @@ const ui = {
       const time = document.getElementById('ev-time').value;
       const location = document.getElementById('ev-location').value.trim();
       const notes = document.getElementById('ev-notes').value.trim();
+      const recurrence = this.evRecurrence || 'none';
       if (!title) return this.toast('Titre requis');
       if (!date) return this.toast('Date requise');
-      await storage.put('events', { type: this.evType, title, date, time, location, notes });
-      this.toast('Événement créé');
-      document.getElementById('ev-title').value = '';
-      document.getElementById('ev-time').value = '';
-      document.getElementById('ev-location').value = '';
-      document.getElementById('ev-notes').value = '';
+      const editIdRaw = document.getElementById('ev-edit-id').value;
+      const editId = editIdRaw ? parseInt(editIdRaw, 10) : null;
+      const payload = { type: this.evType, title, date, time, location, notes, recurrence };
+      if (editId) payload.id = editId;
+      await storage.put('events', payload);
+      // P7 — si récurrence, générer les occurrences forward (8 semaines ou 1 an)
+      if (!editId && recurrence !== 'none') await this._generateRecurrences(payload);
+      this.toast(editId ? 'Événement modifié' : 'Événement créé');
+      this._resetEventForm();
       this.goBack();
     } catch (e) { this.toast('Erreur: ' + e.message); }
+  },
+
+  async _generateRecurrences(base) {
+    // Stocke les occurrences futures pour 8 semaines (weekly) ou 1 an (yearly)
+    // Toutes les occurrences partagent un champ recurrence_parent_date pour les identifier
+    const baseDate = new Date(base.date + 'T00:00:00');
+    const occurrences = [];
+    if (base.recurrence === 'weekly') {
+      for (let w = 1; w <= 8; w++) {
+        const d = new Date(baseDate);
+        d.setDate(d.getDate() + w * 7);
+        occurrences.push(this._toIso(d));
+      }
+    } else if (base.recurrence === 'yearly') {
+      for (let y = 1; y <= 2; y++) {
+        const d = new Date(baseDate);
+        d.setFullYear(d.getFullYear() + y);
+        occurrences.push(this._toIso(d));
+      }
+    }
+    for (const iso of occurrences) {
+      await storage.put('events', {
+        type: base.type, title: base.title, date: iso,
+        time: base.time, location: base.location, notes: base.notes,
+        recurrence: base.recurrence, recurrence_origin: base.date,
+      });
+    }
+  },
+
+  _resetEventForm() {
+    document.getElementById('ev-form-title').textContent = 'Nouvel événement';
+    document.getElementById('btn-save-event').textContent = "Créer l'événement";
+    document.getElementById('ev-title').value = '';
+    document.getElementById('ev-date').value = '';
+    document.getElementById('ev-time').value = '';
+    document.getElementById('ev-location').value = '';
+    document.getElementById('ev-notes').value = '';
+    document.getElementById('ev-edit-id').value = '';
+    this.evType = 'rdv';
+    this.evRecurrence = 'none';
+    document.querySelectorAll('#event-type-grid .type-btn').forEach(x => x.classList.remove('selected'));
+    document.querySelector('#event-type-grid .type-btn[data-type="rdv"]').classList.add('selected');
+    document.querySelectorAll('#ev-recurrence-toggle button').forEach(x => x.classList.remove('active'));
+    document.querySelector('#ev-recurrence-toggle button[data-recur="none"]').classList.add('active');
   },
 
   _renderTask(t) {
@@ -2281,26 +2482,25 @@ const ui = {
     try {
       const todos = await storage.fetchTodos();
       const today = this.todayStr();
-      
-      // 1. Les courses (On garde les cochées pour les voir barrées)
+
+      // 1. Les courses (cochées conservées pour les voir barrées)
       const groceries = todos.filter(t => t.is_grocery);
-      
-      // 2. Les tâches classiques
+
+      // 2. Tâches classiques actives
       const tasks = todos.filter(t => !t.is_grocery && !t.done);
+      // P6 — tâches terminées séparées
       const doneTasks = todos.filter(t => !t.is_grocery && t.done);
 
-      const overdue = tasks.filter(t => t.due_date && t.due_date < today);
+      const overdue  = tasks.filter(t => t.due_date && t.due_date < today);
       const forToday = tasks.filter(t => t.due_date === today);
       const upcoming = tasks.filter(t => t.due_date && t.due_date > today);
-      const noDate = tasks.filter(t => !t.due_date).concat(doneTasks);
+      const noDate   = tasks.filter(t => !t.due_date);
 
       const renderSection = (id, list, countId, containerId) => {
         const el = document.getElementById(id);
         const countEl = document.getElementById(countId);
         const container = document.getElementById(containerId);
-        
         if (countEl) countEl.textContent = list.length;
-        
         if (list.length > 0) {
           if (container) container.style.display = 'block';
           el.innerHTML = list.map(t => this._renderTask(t)).join('');
@@ -2315,6 +2515,18 @@ const ui = {
       renderSection('todo-today', forToday, 'count-today', null);
       renderSection('todo-upcoming', upcoming, 'count-upcoming', null);
       renderSection('todo-backlog', noDate, 'count-backlog', null);
+
+      // P6 — section Terminées : repliée, affichée seulement si des tâches existent
+      const secDone = document.getElementById('sec-done');
+      const countDone = document.getElementById('count-done');
+      const listDone = document.getElementById('todo-done');
+      if (doneTasks.length > 0) {
+        secDone.style.display = 'block';
+        countDone.textContent = doneTasks.length;
+        listDone.innerHTML = doneTasks.map(t => this._renderTask(t)).join('');
+      } else {
+        secDone.style.display = 'none';
+      }
 
       this._attachTodoEvents();
     } catch (err) { console.error('Erreur renderTodo:', err); }
@@ -2351,6 +2563,23 @@ const ui = {
     }
     try {
       const data = JSON.parse(await file.text());
+
+      // Validation schéma : on refuse les exports avec champs legacy (format pré-v4)
+      // pour éviter une corruption silencieuse des moyennes sommeil.
+      // On vérifie TOUTES les lignes, pas juste la première.
+      const legacyFields = ['sleep_hours', 'deep_work_min', 'output_units', 'discipline_ratio'];
+      const dailyLog = data.daily_log || [];
+      for (let i = 0; i < dailyLog.length; i++) {
+        const row = dailyLog[i];
+        const found = legacyFields.filter(f => row[f] !== undefined);
+        if (found.length > 0) {
+          return this.toast(`Import refusé : champs legacy détectés à la ligne ${i + 1} (${found.join(', ')}). Export pré-v4 incompatible.`);
+        }
+        if (row.sleep_minutes !== undefined && typeof row.sleep_minutes !== 'number') {
+          return this.toast(`Import refusé : sleep_minutes doit être un nombre entier (ligne ${i + 1}).`);
+        }
+      }
+
       let count = 0;
       for (const r of data.daily_log || []) { await storage.put('daily_log', r); count++; }
       for (const r of data.events || []) { await storage.put('events', r); count++; }
@@ -2369,8 +2598,14 @@ const ui = {
   async wipeData() {
     if (!confirm('Effacer DÉFINITIVEMENT toutes les données ?')) return;
     if (!confirm('Vraiment ? Cette action est irréversible.')) return;
-    try { await storage.clearStores(['daily_log', 'events', 'todos']); this.toast('Données effacées'); this.renderHome(); }
-    catch (e) { this.toast('Erreur: ' + e.message); }
+    try {
+      // On efface les données, les todos, les événements ET le store meta (last_export_at, etc.)
+      // pour éviter que le badge d'export reste silencieux sur une base vide.
+      // Les backups (snapshots de migration) sont conservés intentionnellement.
+      await storage.clearStores(['daily_log', 'events', 'todos', 'meta']);
+      this.toast('Données effacées');
+      this.renderHome();
+    } catch (e) { this.toast('Erreur: ' + e.message); }
   },
 
   async renderBackups() {
@@ -2386,7 +2621,7 @@ const ui = {
         const totalRows = Object.values(b.data || {}).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
         html += `<div class="hyp-item"><div>Snapshot #${b.id}</div>
           <div class="info-text">${date.toLocaleString('fr-FR')} · ${totalRows} entrées</div>
-          <div class="info-text">${b.reason}</div></div>`;
+          <div class="info-text">${this._escape(b.reason)}</div></div>`;
       }
       container.innerHTML = html;
     } catch (err) { console.error('renderBackups:', err); }
