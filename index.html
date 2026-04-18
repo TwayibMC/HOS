@@ -623,6 +623,22 @@
     border-radius: var(--radius-md); padding: 12px; margin-bottom: 8px;
     font-size: 0.85rem;
   }
+  /* Nouveaux styles v5 pour la To-do temporelle */
+  .todo-section.overdue .sec-title { color: #fca5a5; }
+  .todo-section.today .sec-title { color: var(--amber-light); }
+  .todo-section.upcoming .sec-title { color: var(--gold); }
+  .todo-section.grocery .sec-title { color: #34d399; }
+  
+  .add-task-form .opt-toggle.active-grocery {
+    background: linear-gradient(135deg, #059669 0%, #34d399 100%);
+    color: #000; border-color: #34d399;
+  }
+  
+  .btn-clean-grocery {
+    background: none; border: 1px solid var(--silver-3);
+    color: var(--fg-3); font-size: 0.65rem; padding: 4px 8px;
+    border-radius: 4px; cursor: pointer; text-transform: uppercase;
+  }
 </style>
 </head>
 <body>
@@ -870,25 +886,41 @@
   </section>
 
   <section class="view" id="view-todo">
-    <div class="todo-section mit">
-      <div class="sec-title">★ Most Important Today<span class="sec-count" id="mit-count">0 / 3</span></div>
-      <div id="todo-mit"></div>
-      <div class="mit-counter" id="mit-counter">3 MIT max par jour (force la priorisation).</div>
+    <div class="todo-section grocery" id="sec-grocery" style="display:none;">
+      <div class="sec-title">
+        🛒 Courses <span class="sec-count" id="count-grocery">0</span>
+        <button class="btn-clean-grocery" id="btn-clean-grocery" style="margin-left:auto;">Vider terminés</button>
+      </div>
+      <div id="todo-grocery"></div>
     </div>
-    <div class="todo-section urgent">
-      <div class="sec-title">⚠ Urgent<span class="sec-count" id="urgent-count">0</span></div>
-      <div id="todo-urgent"></div>
+
+    <div class="todo-section overdue" id="sec-overdue" style="display:none;">
+      <div class="sec-title">⚠ En retard <span class="sec-count" id="count-overdue">0</span></div>
+      <div id="todo-overdue"></div>
     </div>
+
+    <div class="todo-section today">
+      <div class="sec-title">📅 Aujourd'hui <span class="sec-count" id="count-today">0</span></div>
+      <div id="todo-today"></div>
+    </div>
+
+    <div class="todo-section upcoming">
+      <div class="sec-title">❯ À venir <span class="sec-count" id="count-upcoming">0</span></div>
+      <div id="todo-upcoming"></div>
+    </div>
+
     <div class="todo-section backlog">
-      <div class="sec-title">Backlog<span class="sec-count" id="backlog-count">0</span></div>
+      <div class="sec-title">Sans date <span class="sec-count" id="count-backlog">0</span></div>
       <div id="todo-backlog"></div>
     </div>
+
     <div class="add-task-form">
-      <input type="text" id="task-text" placeholder="Nouvelle tâche...">
+      <input type="text" id="task-text" placeholder="Nouvelle tâche ou article...">
       <input type="date" id="task-due" placeholder="Échéance (optionnel)">
       <div class="opts">
         <div class="opt-toggle" id="opt-mit">★ MIT</div>
         <div class="opt-toggle" id="opt-urgent">⚠ Urgent</div>
+        <div class="opt-toggle" id="opt-grocery">🛒 Course</div>
       </div>
       <button class="primary" id="btn-add-task" style="margin-top:0;">Ajouter</button>
     </div>
@@ -1001,6 +1033,19 @@ const MIGRATIONS = [
     if (db.objectStoreNames.contains('din_log')) db.deleteObjectStore('din_log');
     if (db.objectStoreNames.contains('hypothesis')) db.deleteObjectStore('hypothesis');
   },
+  // v3 — Ajout du champ is_grocery pour les todos
+  function m_003_add_grocery_field(db, tx) {
+    const store = tx.objectStore('todos');
+    store.openCursor().onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (cursor) {
+        const data = cursor.value;
+        if (data.is_grocery === undefined) data.is_grocery = 0;
+        cursor.update(data);
+        cursor.continue();
+      }
+    };
+  }
 ];
 const DB_VERSION = MIGRATIONS.length;
 
@@ -1432,7 +1477,7 @@ const ui = {
   evType: 'rdv',
   selectedDate: null,
   editingDate: null, // null = edit today; otherwise ISO date string for retroactive edit
-  newTaskOpts: { mit: false, urgent: false },
+  newTaskOpts: { mit: false, urgent: false, grocery: false },
   accompPeriod: 7,
   agendaMode: 'month',
   calCursor: null,
@@ -1555,6 +1600,19 @@ const ui = {
     document.getElementById('opt-urgent').addEventListener('click', (e) => {
       e.currentTarget.classList.toggle('active-urgent');
       this.newTaskOpts.urgent = e.currentTarget.classList.contains('active-urgent');
+    });
+	document.getElementById('opt-grocery').addEventListener('click', (e) => {
+      e.currentTarget.classList.toggle('active-grocery');
+      this.newTaskOpts.grocery = e.currentTarget.classList.contains('active-grocery');
+    });
+
+    document.getElementById('btn-clean-grocery').addEventListener('click', async () => {
+      if(confirm("Supprimer définitivement les articles de courses terminés ?")) {
+        const todos = await storage.fetchTodos();
+        const toDelete = todos.filter(t => t.is_grocery && t.done);
+        for(const t of toDelete) await storage.del('todos', t.id);
+        this.renderTodo();
+      }
     });
     document.getElementById('btn-add-task').addEventListener('click', () => this.addTask());
 
@@ -2182,27 +2240,38 @@ const ui = {
     if (!this.bootOk) return;
     try {
       const todos = await storage.fetchTodos();
-      const open = todos.filter(t => !t.done);
-      const done = todos.filter(t => t.done);
-      const mitOpen = open.filter(t => t.mit);
-      const urgentOpen = open.filter(t => t.urgent && !t.mit);
-      const backlog = open.filter(t => !t.mit && !t.urgent).concat(done);
-      document.getElementById('mit-count').textContent = `${mitOpen.length} / 3`;
-      document.getElementById('urgent-count').textContent = urgentOpen.length;
-      document.getElementById('backlog-count').textContent = backlog.length;
-      const mitEl = document.getElementById('mit-counter');
-      if (mitOpen.length >= 3) { mitEl.textContent = 'Limite atteinte. Pas plus de 3 MIT par jour.'; mitEl.classList.add('max'); }
-      else { mitEl.textContent = '3 MIT max par jour (force la priorisation).'; mitEl.classList.remove('max'); }
-      document.getElementById('todo-mit').innerHTML = mitOpen.length
-        ? mitOpen.map(t => this._renderTask(t)).join('')
-        : '<div class="info-text" style="padding:6px 0;">Pas encore de MIT aujourd\'hui.</div>';
-      document.getElementById('todo-urgent').innerHTML = urgentOpen.length
-        ? urgentOpen.map(t => this._renderTask(t)).join('')
-        : '<div class="info-text" style="padding:6px 0;">Rien d\'urgent.</div>';
-      document.getElementById('todo-backlog').innerHTML = backlog.length
-        ? backlog.map(t => this._renderTask(t)).join('')
-        : '<div class="info-text" style="padding:6px 0;">Backlog vide.</div>';
-      document.querySelectorAll('.task .check[data-id]').forEach(el => {
+      const today = this.todayStr();
+      
+      const groceries = todos.filter(t => t.is_grocery && !t.done);
+      const tasks = todos.filter(t => !t.is_grocery && !t.done);
+      const doneItems = todos.filter(t => t.done && !t.is_grocery); // On garde les tâches terminées en backlog
+
+      const overdue = tasks.filter(t => t.due_date && t.due_date < today);
+      const forToday = tasks.filter(t => t.due_date === today);
+      const upcoming = tasks.filter(t => t.due_date && t.due_date > today);
+      const noDate = tasks.filter(t => !t.due_date).concat(doneItems);
+
+      const renderSection = (id, list, countId, containerId) => {
+        const el = document.getElementById(id);
+        const countEl = document.getElementById(countId);
+        const container = document.getElementById(containerId);
+        countEl.textContent = list.length;
+        if (list.length > 0) {
+          if(container) container.style.display = 'block';
+          el.innerHTML = list.map(t => this._renderTask(t)).join('');
+        } else {
+          if(container) container.style.display = (id === 'todo-today' ? 'block' : 'none');
+          el.innerHTML = id === 'todo-today' ? '<div class="info-text">Rien pour aujourd\'hui.</div>' : '';
+        }
+      };
+
+      renderSection('todo-grocery', groceries, 'count-grocery', 'sec-grocery');
+      renderSection('todo-overdue', overdue, 'count-overdue', 'sec-overdue');
+      renderSection('todo-today', forToday, 'count-today', null);
+      renderSection('todo-upcoming', upcoming, 'count-upcoming', null);
+      renderSection('todo-backlog', noDate, 'count-backlog', null);
+
+      document.querySelectorAll('.task .check').forEach(el => {
         el.addEventListener('click', async () => {
           const id = parseInt(el.dataset.id, 10);
           const t = await storage.get('todos', id);
@@ -2220,18 +2289,6 @@ const ui = {
     } catch (err) { console.error('renderTodo:', err); }
   },
 
-  _renderTask(t) {
-    const badges = [];
-    if (t.mit) badges.push('<span class="badge" style="background:rgba(234,88,12,0.15); color:var(--amber-light); border:1px solid rgba(234,88,12,0.3); font-size:0.6rem; padding:2px 6px; border-radius:4px; font-weight:700; text-transform:uppercase;">MIT</span>');
-    if (t.urgent) badges.push('<span class="badge urgent">Urgent</span>');
-    if (t.due_date) badges.push(`<span class="badge due">${this.fmtFr(t.due_date)}</span>`);
-    return `<div class="task ${t.done ? 'done' : ''}">
-      <div class="check" data-id="${t.id}"></div>
-      <div class="text">${this._escape(t.text)}</div>
-      <div class="badges">${badges.join('')}</div>
-      <button class="task-delete" data-id="${t.id}">✕</button></div>`;
-  },
-
   async addTask() {
     try {
       const text = document.getElementById('task-text').value.trim();
@@ -2241,38 +2298,20 @@ const ui = {
         text, done: 0,
         mit: this.newTaskOpts.mit ? 1 : 0,
         urgent: this.newTaskOpts.urgent ? 1 : 0,
+        is_grocery: this.newTaskOpts.grocery ? 1 : 0,
         due_date: due,
         created_at: new Date().toISOString(),
       });
       document.getElementById('task-text').value = '';
       document.getElementById('task-due').value = '';
-      this.newTaskOpts = { mit: false, urgent: false };
+      this.newTaskOpts = { mit: false, urgent: false, grocery: false };
       document.getElementById('opt-mit').classList.remove('active-mit');
       document.getElementById('opt-urgent').classList.remove('active-urgent');
+      document.getElementById('opt-grocery').classList.remove('active-grocery');
       this.renderTodo();
       this.toast('Tâche ajoutée');
     } catch (e) { this.toast('Erreur: ' + e.message); }
   },
-
-  async exportData() {
-    try {
-      const data = {
-        version: 4, exported_at: new Date().toISOString(),
-        daily_log: await storage.getAll('daily_log'),
-        events: await storage.getAll('events'),
-        todos: await storage.getAll('todos'),
-      };
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `hos_export_${this.todayStr()}.json`; a.click();
-      URL.revokeObjectURL(url);
-      await storage.setMeta('last_export_at', new Date().toISOString());
-      this.refreshExportBadge();
-      this.toast('Export téléchargé');
-    } catch (e) { this.toast('Erreur: ' + e.message); }
-  },
-
   async importData(e) {
     const file = e.target.files[0];
     if (!file) return;
