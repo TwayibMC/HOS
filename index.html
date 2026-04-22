@@ -503,8 +503,8 @@
   }
   .task .task-delete {
     background: none; border: none; color: var(--fg-3);
-    cursor: pointer; padding: 4px 8px; font-size: 1rem; flex-shrink: 0;
-    opacity: 0; transition: opacity 0.15s;
+    cursor: pointer; padding: 4px 8px; font-size: 0.85rem; flex-shrink: 0;
+    opacity: 0.45; transition: opacity 0.15s;
   }
   .task:hover .task-delete, .task:active .task-delete { opacity: 1; }
 
@@ -585,15 +585,6 @@
     background: transparent; color: #000; border: 1px solid rgba(0, 0, 0, 0.3);
   }
 
-  #export-badge {
-    display: none;
-    background: linear-gradient(135deg, rgba(120, 53, 15, 0.4) 0%, rgba(120, 53, 15, 0.2) 100%);
-    color: var(--gold-soft); padding: 11px 15px;
-    border-radius: var(--radius-md); font-size: 0.85rem;
-    margin-bottom: 14px; border: 1px solid rgba(234, 88, 12, 0.4);
-    line-height: 1.45;
-  }
-
   #boot-error {
     display: none;
     background: rgba(153, 27, 27, 0.15);
@@ -639,6 +630,15 @@
     color: var(--fg-3); font-size: 0.65rem; padding: 4px 8px;
     border-radius: 4px; cursor: pointer; text-transform: uppercase;
   }
+
+  #btn-export {
+    background: none; border: 1px solid var(--silver-3);
+    color: var(--fg-3); font-size: 0.72rem; padding: 5px 10px;
+    border-radius: var(--radius-sm); cursor: pointer; font-family: inherit;
+    letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  #btn-export:active { border-color: var(--amber); color: var(--amber-light); }
 </style>
 </head>
 <body>
@@ -652,7 +652,10 @@
 <header>
   <button class="back" id="btn-back" style="display:none;">‹</button>
   <h1 id="header-title">HOS</h1>
-  <span class="date" id="header-date"></span>
+  <div style="display:flex; align-items:center; gap:10px;">
+    <button id="btn-export" title="Exporter toutes les données en JSON">↓ Export</button>
+    <span class="date" id="header-date"></span>
+  </div>
 </header>
 
 <main>
@@ -948,38 +951,6 @@
   </div>
 </section>
 
-  <section class="view" id="view-settings">
-    <h2>Données</h2>
-    <div id="export-badge"></div>
-    <div class="card">
-      <h3 style="margin-top: 0;">Export / Import</h3>
-      <p class="info-text" style="margin-bottom: 12px;">
-        Sauvegarde hebdomadaire recommandée vers iCloud / Drive / mail.
-      </p>
-      <button class="secondary" id="btn-export">Export JSON</button>
-      <button class="secondary" id="btn-import">Import JSON</button>
-      <input type="file" id="import-file" accept=".json" style="display: none;">
-    </div>
-    <div class="card">
-      <h3 style="margin-top: 0;">Snapshots automatiques</h3>
-      <p class="info-text" style="margin-bottom: 12px;">
-        Créés avant chaque mise à jour du schéma. 3 plus récents conservés.
-      </p>
-      <div id="backup-list"></div>
-    </div>
-    <div class="card">
-      <h3 style="margin-top: 0;">Démo</h3>
-      <p class="info-text" style="margin-bottom: 12px;">
-        Efface les données et charge 60 jours synthétiques pour explorer.
-      </p>
-      <button class="secondary" id="btn-seed">Charger démo (60 j)</button>
-    </div>
-    <div class="card" style="border-color: rgba(153, 27, 27, 0.4);">
-      <h3 style="margin-top: 0;">Zone dangereuse</h3>
-      <p class="info-text" style="margin-bottom: 12px;">Efface définitivement toutes les données locales.</p>
-      <button class="secondary" id="btn-wipe">Effacer toutes les données</button>
-    </div>
-  </section>
 </main>
 
 <nav class="tabs">
@@ -1448,57 +1419,6 @@ const recommend = {
   },
 };
 
-const seed = {
-  _rng(s) { return function() { s |= 0; s = s + 0x6D2B79F5 | 0; let t = s; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; },
-  _gauss(rng, mu, sigma) { const u1 = Math.max(rng(), 1e-12); const u2 = rng(); return mu + sigma * Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2); },
-
-  async generate(n = 60) {
-    await storage.clearStores(['daily_log', 'events', 'todos']);
-    const rng = this._rng(42);
-    const today = new Date();
-    for (let i = 0; i < n; i++) {
-      const d = new Date(today); d.setDate(d.getDate() - (n - 1 - i));
-      const iso = d.toISOString().slice(0, 10);
-      const sleepH = Math.max(4.5, Math.min(9, this._gauss(rng, 7.2 - i * 0.01, 0.6)));
-      const sleepMin = Math.round(sleepH * 60);
-      const fatigueMu = i >= n - 7 ? 3.5 + (i - (n - 7)) * 0.2 : 2.5;
-      const fatigue = Math.max(1, Math.min(5, Math.round(this._gauss(rng, fatigueMu, 0.6))));
-      const bedH = 22 + Math.floor(rng() * 2);
-      const bedM = Math.floor(rng() * 60);
-      const row = {
-        log_date: iso,
-        sleep_minutes: sleepMin,
-        sleep_time: `${String(bedH).padStart(2,'0')}:${String(bedM).padStart(2,'0')}`,
-        fatigue,
-        fajr: rng() < 0.85 ? 1 : 0,
-        dhuhr: rng() < 0.95 ? 1 : 0,
-        asr: rng() < 0.90 ? 1 : 0,
-        maghrib: rng() < 0.97 ? 1 : 0,
-        isha: rng() < 0.92 ? 1 : 0,
-        quran_pages: Math.max(0, Math.round(this._gauss(rng, i < n - 7 ? 3.5 : 1.2, 1.5))),
-        water_2l: rng() < (i < n - 7 ? 0.75 : 0.4) ? 1 : 0,
-        stretching_morning: rng() < (i < n - 14 ? 0.7 : 0.2) ? 1 : 0,
-        stretching_evening: rng() < 0.6 ? 1 : 0,
-        skincare_done: rng() < 0.9 ? 1 : 0,
-        dhikr_done: rng() < 0.55 ? 1 : 0,
-      };
-      await storage.put('daily_log', row);
-    }
-    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 3);
-    await storage.put('events', {
-      type: 'rdv', title: 'RDV dentiste',
-      date: tomorrow.toISOString().slice(0, 10), time: '14:30',
-      location: 'Cabinet Dr. Martin, Nice',
-      notes: 'Apporter radio précédente',
-    });
-    const today2 = new Date().toISOString().slice(0, 10);
-    await storage.put('events', {
-      type: 'call', title: 'Appeler assurance',
-      date: today2, time: '15:00', location: '', notes: '',
-    });
-  },
-};
-
 const HELP = {
   sleep: {
     title: 'Durée de sommeil',
@@ -1559,7 +1479,6 @@ const ui = {
 
     await this.renderHome();
     await this.loadTodayIfPresent();
-    this.refreshExportBadge();
   },
 
   _showBootError(msg) {
@@ -1725,11 +1644,9 @@ const ui = {
       }
     });
 
-    document.getElementById('btn-export').addEventListener('click', () => this.exportData());
-    document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file').click());
-    document.getElementById('import-file').addEventListener('change', (e) => this.importData(e));
-    document.getElementById('btn-seed').addEventListener('click', () => this.runSeed());
-    document.getElementById('btn-wipe').addEventListener('click', () => this.wipeData());
+    // Export JSON — backup manuel téléchargeable
+    document.getElementById('btn-export').addEventListener('click', () => this.exportJSON());
+
   },
 
   _refreshHeaderDate() {
@@ -1755,18 +1672,18 @@ const ui = {
     const target = document.getElementById('view-' + view);
     if (target) target.classList.add('active');
     document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
-    const tabMap = { home: 'home', tracking: 'tracking', board: 'board', agenda: 'agenda', todo: 'todo', day: 'agenda', 'event-new': 'agenda', settings: null };
+    const tabMap = { home: 'home', tracking: 'tracking', board: 'board', agenda: 'agenda', todo: 'todo', day: 'agenda', 'event-new': 'agenda' };
     const activeTab = tabMap[view];
     if (activeTab) {
       const tabBtn = document.querySelector(`nav.tabs button[data-tab="${activeTab}"]`);
       if (tabBtn) tabBtn.classList.add('active');
     }
-    const isSubview = ['day', 'event-new', 'settings'].includes(view);
+    const isSubview = ['day', 'event-new'].includes(view);
     document.getElementById('btn-back').style.display = isSubview ? 'block' : 'none';
     const titles = {
       home: 'HOS', tracking: 'Tracking', board: 'Board',
       agenda: 'Agenda', todo: 'To-do', day: 'Journée',
-      'event-new': 'Nouvel événement', settings: 'Données',
+      'event-new': 'Nouvel événement',
     };
     document.getElementById('header-title').textContent = titles[view] || 'HOS';
     if (view === 'home') this.renderHome();
@@ -1779,7 +1696,6 @@ const ui = {
     if (view === 'agenda') { this._calCursorInit(); this.renderAgenda(); }
     if (view === 'todo') this.renderTodo();
     if (view === 'day') this.renderDay();
-    if (view === 'settings') { this.renderBackups(); this.refreshExportBadge(); }
     window.scrollTo(0, 0);
   },
 
@@ -2561,97 +2477,34 @@ const ui = {
       this.toast('Tâche ajoutée');
     } catch (e) { this.toast('Erreur: ' + e.message); }
   },
-  async importData(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!confirm('Cet import écrasera les entrées avec la même date/id. Continuer ?')) {
-      e.target.value = ''; return;
+  async exportJSON() {
+    try {
+      const [daily_log, events, todos] = await Promise.all([
+        storage.getAll('daily_log'),
+        storage.getAll('events'),
+        storage.getAll('todos'),
+      ]);
+      const payload = {
+        hos_export_version: 1,
+        exported_at: new Date().toISOString(),
+        daily_log,
+        events,
+        todos,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const today = this.todayStr();
+      a.href = url;
+      a.download = `hos-backup-${today}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      this.toast('Export téléchargé');
+    } catch (err) {
+      this.toast('Erreur export : ' + err.message);
     }
-    try {
-      const data = JSON.parse(await file.text());
-
-      // Validation schéma : on refuse les exports avec champs legacy (format pré-v4)
-      // pour éviter une corruption silencieuse des moyennes sommeil.
-      // On vérifie TOUTES les lignes, pas juste la première.
-      const legacyFields = ['sleep_hours', 'deep_work_min', 'output_units', 'discipline_ratio'];
-      const dailyLog = data.daily_log || [];
-      for (let i = 0; i < dailyLog.length; i++) {
-        const row = dailyLog[i];
-        const found = legacyFields.filter(f => row[f] !== undefined);
-        if (found.length > 0) {
-          return this.toast(`Import refusé : champs legacy détectés à la ligne ${i + 1} (${found.join(', ')}). Export pré-v4 incompatible.`);
-        }
-        if (row.sleep_minutes !== undefined && typeof row.sleep_minutes !== 'number') {
-          return this.toast(`Import refusé : sleep_minutes doit être un nombre entier (ligne ${i + 1}).`);
-        }
-      }
-
-      let count = 0;
-      for (const r of data.daily_log || []) { await storage.put('daily_log', r); count++; }
-      for (const r of data.events || []) { await storage.put('events', r); count++; }
-      for (const r of data.todos || []) { await storage.put('todos', r); count++; }
-      this.toast(`${count} entrées importées`);
-    } catch (err) { this.toast('Erreur: ' + err.message); }
-    e.target.value = '';
-  },
-
-  async runSeed() {
-    if (!confirm('Cela efface toutes les données et charge 60 jours de démo. Continuer ?')) return;
-    try { await seed.generate(60); this.toast('60 j chargés'); this.renderHome(); }
-    catch (e) { this.toast('Erreur: ' + e.message); }
-  },
-
-  async wipeData() {
-    if (!confirm('Effacer DÉFINITIVEMENT toutes les données ?')) return;
-    if (!confirm('Vraiment ? Cette action est irréversible.')) return;
-    try {
-      // On efface les données, les todos, les événements ET le store meta (last_export_at, etc.)
-      // pour éviter que le badge d'export reste silencieux sur une base vide.
-      // Les backups (snapshots de migration) sont conservés intentionnellement.
-      await storage.clearStores(['daily_log', 'events', 'todos', 'meta']);
-      this.toast('Données effacées');
-      this.renderHome();
-    } catch (e) { this.toast('Erreur: ' + e.message); }
-  },
-
-  async renderBackups() {
-    if (!this.bootOk) return;
-    try {
-      const container = document.getElementById('backup-list');
-      if (!container) return;
-      const backups = await storage.listBackups();
-      if (!backups.length) { container.innerHTML = '<p class="info-text">Aucun snapshot.</p>'; return; }
-      let html = '';
-      for (const b of backups) {
-        const date = new Date(b.created_at);
-        const totalRows = Object.values(b.data || {}).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
-        html += `<div class="hyp-item"><div>Snapshot #${b.id}</div>
-          <div class="info-text">${date.toLocaleString('fr-FR')} · ${totalRows} entrées</div>
-          <div class="info-text">${this._escape(b.reason)}</div></div>`;
-      }
-      container.innerHTML = html;
-    } catch (err) { console.error('renderBackups:', err); }
-  },
-
-  async refreshExportBadge() {
-    if (!this.bootOk) return;
-    try {
-      const lastExport = await storage.getMeta('last_export_at');
-      const badge = document.getElementById('export-badge');
-      if (!badge) return;
-      const rows = await storage.fetchDailyAsc();
-      if (rows.length === 0) { badge.style.display = 'none'; return; }
-      if (!lastExport) {
-        badge.style.display = 'block';
-        badge.textContent = `Aucun export enregistré. ${rows.length} jour(s) uniquement sur ce téléphone.`;
-        return;
-      }
-      const days = Math.floor((Date.now() - new Date(lastExport).getTime()) / DAY_MS);
-      if (days >= 7) {
-        badge.style.display = 'block';
-        badge.textContent = `Dernier export il y a ${days} jours. Sauvegarde recommandée.`;
-      } else { badge.style.display = 'none'; }
-    } catch (err) { console.error('refreshExportBadge:', err); }
   },
 
   watchForSWUpdate() {
