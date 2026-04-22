@@ -711,7 +711,7 @@
         <div class="field">
           <div class="label-col">
             <div class="name">Heure de coucher</div>
-            <div class="unit">la veille au soir</div>
+            <div class="unit">20h–23h59 = ce soir · 00h–07h59 = après minuit (même nuit)</div>
           </div>
           <input type="time" id="sleep_time">
         </div>
@@ -1553,8 +1553,8 @@ const ui = {
       return;
     }
 
-    // Pre-fill bedtime
-    const st = document.getElementById('sleep_time');
+    // Pré-remplissage heure de coucher : 23:00 (plage valide 20:00–07:59)
+    // Les heures 00:00–07:59 sont automatiquement interprétées comme après minuit (même nuit).    const st = document.getElementById('sleep_time');
     if (!st.value) st.value = '23:00';
 
     await this.renderHome();
@@ -2065,11 +2065,21 @@ const ui = {
     const withSleep = rows.filter(r => r.sleep_minutes != null && r.fatigue != null);
     if (withSleep.length < 14) { c.innerHTML = '<div class="empty-state">Besoin d\'au moins 14 jours de données sommeil + fatigue.</div>'; return; }
 
+    // _bedHour : convertit "HH:MM" en heure normalisée pour l'analyse et le graphe.
+    // Convention : la nuit couvre 20h → 07h59 (le lendemain matin).
+    // 20h–23h59 → heures directes (20..23)
+    // 00h–07h59 → heures après minuit = 24..31  (ex: 01:30 → 25.5)
+    // Toute valeur hors de cette plage (08h–19h59) est ignorée (données aberrantes).
+    const _bedHour = (sleepTime) => {
+      if (!sleepTime) return null;
+      const [hh, mm] = sleepTime.split(':').map(Number);
+      const norm = (hh < 8 ? hh + 24 : hh); // 00–07 → 24–31
+      if (norm < 20 || norm > 31) return null; // hors plage nocturne : ignoré
+      return norm + mm / 60;
+    };
+
     const sleepSeries = rows.filter(r => r.sleep_minutes != null).map(r => r.sleep_minutes);
-    const bedSeries = rows.filter(r => r.sleep_time).map(r => {
-      const [hh, mm] = r.sleep_time.split(':').map(Number);
-      return (hh < 12 ? hh + 24 : hh) - 20 + mm / 60;
-    });
+    const bedSeries = rows.filter(r => _bedHour(r.sleep_time) != null).map(r => _bedHour(r.sleep_time));
 
     // Encart objectif vs réel — moyennes 7j et 30j, cible fixe 7h30
     const SLEEP_TARGET_MIN = 7.5 * 60;
@@ -2091,16 +2101,12 @@ const ui = {
     </div>`;
 
     const before23 = withSleep.filter(r => {
-      if (!r.sleep_time) return false;
-      const [h] = r.sleep_time.split(':').map(Number);
-      return (h >= 20 && h < 23);
+      const bh = _bedHour(r.sleep_time);
+      return bh !== null && bh >= 20 && bh < 23;
     });
     const after2330 = withSleep.filter(r => {
-      if (!r.sleep_time) return false;
-      const [h, m] = r.sleep_time.split(':').map(Number);
-      if (h >= 23 && h < 24 && m >= 30) return true;
-      if (h < 5) return true;
-      return false;
+      const bh = _bedHour(r.sleep_time);
+      return bh !== null && bh >= 23.5;
     });
     const shortSleep = withSleep.filter(r => r.sleep_minutes < 6.5 * 60);
     const longSleep  = withSleep.filter(r => r.sleep_minutes >= 7.5 * 60);
